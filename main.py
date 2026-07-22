@@ -1,12 +1,13 @@
 """
-유튜브 댓글 분석 앱 - 2단계
+유튜브 댓글 분석 앱 - 3단계
 --------------------------------
 이 앱이 하는 일:
 1) 사용자가 유튜브 영상 링크를 입력하면
 2) 링크에서 '영상 ID'만 뽑아내고
 3) YouTube Data API v3로 댓글(최대 100개, 좋아요 많은 순)을 가져와서
 4) 표와 지표 카드로 보여주고
-5) 댓글에서 자주 나온 단어 TOP 20을 plotly 가로 막대그래프로 보여준다.
+5) 댓글에서 자주 나온 단어 TOP 20을 plotly 가로 막대그래프로 보여주고
+6) 댓글 전체로 워드클라우드 이미지를 만들어 보여준다.
 
 * 스트림릿 클라우드에 배포할 때는
   '설정(Settings) > Secrets' 메뉴에 아래처럼 API 키를 등록해야 합니다.
@@ -21,6 +22,7 @@ from urllib.parse import urlparse, parse_qs
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from wordcloud import WordCloud
 
 # ------------------------------------------------------------
 # 0. 기본 설정
@@ -33,6 +35,13 @@ EXAMPLE_2_URL = "https://youtu.be/I9vK5EVTt0U?si=NEZ8L7MRuNvrzINa"
 
 # 유튜브 댓글 API 주소 (고정된 값)
 YOUTUBE_COMMENT_API_URL = "https://www.googleapis.com/youtube/v3/commentThreads"
+
+# 워드클라우드용 한글 폰트 (나눔고딕) 다운로드 주소
+NANUM_FONT_URL = (
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/nanumgothic/"
+    "NanumGothic-Regular.ttf"
+)
+NANUM_FONT_PATH = "/tmp/NanumGothic-Regular.ttf"
 
 
 # ------------------------------------------------------------
@@ -131,12 +140,12 @@ def fetch_comments(video_id: str, api_key: str):
 
 
 # ------------------------------------------------------------
-# 2-1. 댓글 전체에서 자주 나온 단어 상위 N개를 세는 함수 (2단계)
+# 2-1. 댓글 전체에서 단어를 세는 함수 (2단계/3단계 공용)
 #    - 한글/영문/숫자만 '단어'로 인정 (특수문자, 이모지 등은 무시)
 #    - 한 글자짜리 단어는 결과에서 제외
 #    - 영어는 대소문자를 구분하지 않도록 소문자로 통일
 # ------------------------------------------------------------
-def get_top_words(comments, top_n=20):
+def get_word_counter(comments):
     word_counter = Counter()
 
     for comment in comments:
@@ -149,14 +158,33 @@ def get_top_words(comments, top_n=20):
             if len(word) >= 2:           # 한 글자짜리 단어는 제외
                 word_counter[word] += 1
 
-    return word_counter.most_common(top_n)
+    return word_counter
+
+
+# ------------------------------------------------------------
+# 2-2. 워드클라우드에 쓸 한글 폰트(나눔고딕)를 다운로드하는 함수 (3단계)
+#    - @st.cache_resource 덕분에 앱이 켜져 있는 동안 한 번만 다운로드함
+#    - 성공하면 폰트 파일 경로를 반환, 실패하면 None을 반환
+# ------------------------------------------------------------
+@st.cache_resource(show_spinner=False)
+def download_korean_font():
+    try:
+        response = requests.get(NANUM_FONT_URL, timeout=15)
+        response.raise_for_status()
+    except requests.exceptions.RequestException:
+        return None
+
+    with open(NANUM_FONT_PATH, "wb") as f:
+        f.write(response.content)
+
+    return NANUM_FONT_PATH
 
 
 # ------------------------------------------------------------
 # 3. 화면 구성 시작
 # ------------------------------------------------------------
-st.title("💬 유튜브 댓글 분석기 (1단계)")
-st.caption("유튜브 링크를 넣으면 좋아요가 많은 순으로 댓글을 가져와서 보여줘요.")
+st.title("💬 유튜브 댓글 분석기")
+st.caption("유튜브 링크를 넣으면 댓글을 가져와서 표, 단어 그래프, 워드클라우드로 보여줘요.")
 
 # 입력창의 값을 미리 저장해 둘 공간(session_state)을 준비
 # -> 예시 버튼을 누르면 이 값을 바꿔서 입력창에 자동으로 채워지게 함
@@ -244,7 +272,8 @@ if fetch_clicked:
                 )
 
                 # (8) 자주 나온 단어 상위 20개 분석 (2단계)
-                top_words = get_top_words(comments_sorted, top_n=20)
+                word_counter = get_word_counter(comments_sorted)
+                top_words = word_counter.most_common(20)
 
                 if top_words:
                     st.subheader("📊 자주 나온 단어 TOP 20")
@@ -276,3 +305,28 @@ if fetch_clicked:
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("분석할 수 있는 단어(두 글자 이상)가 없어요.")
+
+                # (9) 댓글 전체로 워드클라우드 그리기 (3단계)
+                st.subheader("☁️ 댓글 워드클라우드")
+
+                with st.spinner("한글 폰트를 준비하는 중이에요..."):
+                    font_path = download_korean_font()
+
+                if not font_path:
+                    st.warning(
+                        "🔤 워드클라우드용 한글 폰트를 내려받지 못했어요. "
+                        "인터넷 연결을 확인한 뒤 페이지를 새로고침해서 다시 시도해 주세요."
+                    )
+                elif not word_counter:
+                    st.info("워드클라우드로 그릴 단어(두 글자 이상)가 없어요.")
+                else:
+                    wordcloud = WordCloud(
+                        font_path=font_path,     # 한글이 깨지지 않도록 나눔고딕 폰트 지정
+                        background_color="white",  # 배경 흰색
+                        width=1000,
+                        height=600,
+                    ).generate_from_frequencies(word_counter)
+
+                    # matplotlib 없이, wordcloud가 만들어주는 이미지를 바로 화면에 표시
+                    wordcloud_image = wordcloud.to_image()
+                    st.image(wordcloud_image, use_container_width=True)
