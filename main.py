@@ -1,13 +1,15 @@
 """
-유튜브 댓글 AI 분석 앱 (단일 파일 버전)
+유튜브 댓글 분석 + AI 세줄요약 앱
 --------------------------------
 이 앱이 하는 일:
 1) 사용자가 유튜브 영상 링크를 입력하면
 2) 링크에서 '영상 ID'만 뽑아내고
 3) YouTube Data API v3로 댓글(최대 100개, 좋아요 많은 순)을 가져와서
 4) 표와 지표 카드로 보여주고
-5) 'AI 세 줄 요약' 버튼을 누르면 Solar API(solar-open2 모델)가
-   댓글 전체 반응을 한국어 세 줄로 요약해준다.
+5) 자주 나온 단어 TOP 20을 plotly 가로 막대그래프로 보여주고
+6) 댓글 전체로 워드클라우드 이미지를 만들어 보여주고
+7) 워드클라우드 바로 아래에서 'AI 세 줄 요약' 버튼을 누르면
+   Solar API(solar-open2 모델)가 댓글 전체 반응을 한국어 세 줄로 요약해준다.
 
 * 스트림릿 클라우드에 배포할 때는
   '설정(Settings) > Secrets' 메뉴에 아래처럼 두 개의 키를 등록해야 합니다.
@@ -15,19 +17,22 @@
   YOUTUBE_API_KEY = "여기에_유튜브_API_키"
   SOLAR_API_KEY = "여기에_업스테이지_Solar_API_키"
 
-* 중요: 아래 코드는 두 API 키를
-  '파일이 열리자마자'가 아니라 '해당 버튼을 눌렀을 때'만,
-  그리고 st.secrets["..."] 처럼 대괄호로 직접 읽지 않고
-  st.secrets.get("...", None) 방식으로 안전하게 읽어옵니다.
+* 중요: 두 API 키 모두 '파일이 열리자마자'가 아니라
+  '해당 버튼을 눌렀을 때'만, 그리고 st.secrets["..."] 처럼 대괄호로
+  직접 읽지 않고 st.secrets.get("...", None) 방식으로 안전하게 읽어옵니다.
   이렇게 해야 키를 아직 등록하지 않았을 때도 앱이 통째로 죽지 않고
   화면에 친절한 한국어 안내만 나타납니다.
 """
 
+import re
+from collections import Counter
 from urllib.parse import urlparse, parse_qs
 
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 from openai import OpenAI
+from wordcloud import WordCloud
 
 # ------------------------------------------------------------
 # 0. 기본 설정
@@ -40,6 +45,13 @@ EXAMPLE_2_URL = "https://youtu.be/I9vK5EVTt0U?si=NEZ8L7MRuNvrzINa"
 
 # 유튜브 댓글 API 주소 (고정된 값)
 YOUTUBE_COMMENT_API_URL = "https://www.googleapis.com/youtube/v3/commentThreads"
+
+# 워드클라우드용 한글 폰트 (나눔고딕) 다운로드 주소
+NANUM_FONT_URL = (
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/nanumgothic/"
+    "NanumGothic-Regular.ttf"
+)
+NANUM_FONT_PATH = "/tmp/NanumGothic-Regular.ttf"
 
 # Solar API(업스테이지) 관련 고정 값
 SOLAR_BASE_URL = "https://api.upstage.ai/v1"
@@ -142,7 +154,48 @@ def fetch_comments(video_id: str, api_key: str):
 
 
 # ------------------------------------------------------------
-# 3. Solar API(solar-open2)로 댓글 전체를 세 줄 요약하는 함수
+# 3. 댓글 전체에서 단어를 세는 함수 (막대그래프 + 워드클라우드 공용)
+#    - 한글/영문/숫자만 '단어'로 인정 (특수문자, 이모지 등은 무시)
+#    - 한 글자짜리 단어는 결과에서 제외
+#    - 영어는 대소문자를 구분하지 않도록 소문자로 통일
+# ------------------------------------------------------------
+def get_word_counter(comments):
+    word_counter = Counter()
+
+    for comment in comments:
+        text = comment["댓글"]
+        # 한글, 영문, 숫자로 이루어진 덩어리만 '단어'로 추출
+        words = re.findall(r"[가-힣a-zA-Z0-9]+", text)
+
+        for word in words:
+            word = word.lower()          # 영어 대소문자 통일
+            if len(word) >= 2:           # 한 글자짜리 단어는 제외
+                word_counter[word] += 1
+
+    return word_counter
+
+
+# ------------------------------------------------------------
+# 4. 워드클라우드에 쓸 한글 폰트(나눔고딕)를 다운로드하는 함수
+#    - @st.cache_resource 덕분에 앱이 켜져 있는 동안 한 번만 다운로드함
+#    - 성공하면 폰트 파일 경로를 반환, 실패하면 None을 반환
+# ------------------------------------------------------------
+@st.cache_resource(show_spinner=False)
+def download_korean_font():
+    try:
+        response = requests.get(NANUM_FONT_URL, timeout=15)
+        response.raise_for_status()
+    except requests.exceptions.RequestException:
+        return None
+
+    with open(NANUM_FONT_PATH, "wb") as f:
+        f.write(response.content)
+
+    return NANUM_FONT_PATH
+
+
+# ------------------------------------------------------------
+# 5. Solar API(solar-open2)로 댓글 전체를 세 줄 요약하는 함수
 #    - openai 라이브러리를 그대로 쓰되, 접속 주소만 Solar API로 바꿔서 사용
 #    - reasoning_effort="none" 으로 줘서 생각(추론) 기능을 꺼서 빠르게 응답받음
 #    - 성공하면 (요약 텍스트, None) 을 반환
@@ -188,10 +241,10 @@ def summarize_comments(comments, api_key):
 
 
 # ------------------------------------------------------------
-# 4. 화면 구성 시작
+# 6. 화면 구성 시작
 # ------------------------------------------------------------
 st.title("🤖 유튜브 댓글 AI 분석기")
-st.caption("댓글을 가져오고, AI에게 전체 반응을 세 줄로 요약해달라고 부탁해봐요.")
+st.caption("댓글을 가져와서 표·단어그래프·워드클라우드로 보여주고, AI가 세 줄로 요약해줘요.")
 
 # 입력창의 값을 미리 저장해 둘 공간(session_state)을 준비
 # -> 예시 버튼을 누르면 이 값을 바꿔서 입력창에 자동으로 채워지게 함
@@ -218,7 +271,7 @@ def _use_example_2():
     st.session_state.url_input = EXAMPLE_2_URL
 
 
-# 4-1. 예시 버튼 두 개를 나란히 배치
+# 6-1. 예시 버튼 두 개를 나란히 배치
 col1, col2 = st.columns(2)
 with col1:
     st.button(
@@ -233,17 +286,17 @@ with col2:
         use_container_width=True,
     )
 
-# 4-2. 유튜브 링크 입력창 (key로 session_state.url_input과 연결됨)
+# 6-2. 유튜브 링크 입력창 (key로 session_state.url_input과 연결됨)
 video_url = st.text_input(
     "유튜브 영상 링크를 붙여넣어주세요",
     key="url_input",
 )
 
-# 4-3. 댓글 가져오기 버튼
+# 6-3. 댓글 가져오기 버튼
 fetch_clicked = st.button("📥 댓글 가져오기", type="primary")
 
 # ------------------------------------------------------------
-# 5. '댓글 가져오기' 버튼을 눌렀을 때의 처리
+# 7. '댓글 가져오기' 버튼을 눌렀을 때의 처리
 # ------------------------------------------------------------
 if fetch_clicked:
     # 새로 가져오기를 시도하는 것이므로, 이전 결과는 일단 초기화
@@ -285,13 +338,13 @@ if fetch_clicked:
                 )
 
 # ------------------------------------------------------------
-# 6. 댓글 가져오기 실패 메시지 표시
+# 8. 댓글 가져오기 실패 메시지 표시
 # ------------------------------------------------------------
 if st.session_state.fetch_error:
     st.warning(st.session_state.fetch_error)
 
 # ------------------------------------------------------------
-# 7. 댓글이 세션에 저장되어 있다면 항상 화면에 표시
+# 9. 댓글이 세션에 저장되어 있다면 항상 화면에 표시
 #    (AI 요약 버튼을 눌러 화면이 다시 그려져도 계속 보이도록 함)
 # ------------------------------------------------------------
 if st.session_state.comments:
@@ -311,8 +364,71 @@ if st.session_state.comments:
         },
     )
 
-    # (3) AI 세 줄 요약 버튼
-    ai_clicked = st.button("🧠 AI 세 줄 요약")
+    # (3) 자주 나온 단어 상위 20개 -> 가로 막대그래프
+    word_counter = get_word_counter(comments_sorted)
+    top_words = word_counter.most_common(20)
+
+    if top_words:
+        st.subheader("📊 자주 나온 단어 TOP 20")
+
+        # most_common()은 [(단어, 개수), ...] 형태로
+        # '많이 나온 순서'로 이미 정렬되어 있음
+        words = [w for w, _ in top_words]
+        counts = [c for _, c in top_words]
+
+        fig = go.Figure(
+            go.Bar(
+                x=counts,
+                y=words,
+                orientation="h",   # 가로 막대그래프
+                text=counts,
+                textposition="outside",
+            )
+        )
+
+        # y축을 뒤집어서, 가장 많이 나온 단어가 맨 위로 오게 함
+        fig.update_layout(
+            yaxis=dict(autorange="reversed"),
+            xaxis_title="언급 횟수",
+            yaxis_title="단어",
+            height=600,
+            margin=dict(l=10, r=30, t=30, b=10),
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("분석할 수 있는 단어(두 글자 이상)가 없어요.")
+
+    # (4) 댓글 전체로 워드클라우드 그리기
+    st.subheader("☁️ 댓글 워드클라우드")
+
+    with st.spinner("한글 폰트를 준비하는 중이에요..."):
+        font_path = download_korean_font()
+
+    if not font_path:
+        st.warning(
+            "🔤 워드클라우드용 한글 폰트를 내려받지 못했어요. "
+            "인터넷 연결을 확인한 뒤 페이지를 새로고침해서 다시 시도해 주세요."
+        )
+    elif not word_counter:
+        st.info("워드클라우드로 그릴 단어(두 글자 이상)가 없어요.")
+    else:
+        wordcloud = WordCloud(
+            font_path=font_path,       # 한글이 깨지지 않도록 나눔고딕 폰트 지정
+            background_color="white",  # 배경 흰색
+            width=1000,
+            height=600,
+        ).generate_from_frequencies(word_counter)
+
+        # matplotlib 없이, wordcloud가 만들어주는 이미지를 바로 화면에 표시
+        wordcloud_image = wordcloud.to_image()
+        st.image(wordcloud_image, use_container_width=True)
+
+    # (5) 워드클라우드 바로 아래 -> AI 세 줄 요약
+    st.divider()
+    st.subheader("🧠 AI 세 줄 요약")
+
+    ai_clicked = st.button("🧠 AI 세 줄 요약 보기")
 
     if ai_clicked:
         # -> 여기도 st.secrets["..."] 대신 .get()으로 안전하게 읽음
@@ -334,9 +450,8 @@ if st.session_state.comments:
             st.session_state.ai_summary = summary
             st.session_state.ai_error = ai_error_message
 
-    # (4) AI 요약 결과 또는 에러 메시지 표시
+    # (6) AI 요약 결과 또는 에러 메시지 표시
     if st.session_state.ai_error:
         st.warning(st.session_state.ai_error)
     elif st.session_state.ai_summary:
-        st.subheader("🧠 AI 세 줄 요약")
         st.info(st.session_state.ai_summary)
