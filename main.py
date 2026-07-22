@@ -37,7 +37,7 @@ from wordcloud import WordCloud
 # ------------------------------------------------------------
 # 0. 기본 설정
 # ------------------------------------------------------------
-st.set_page_config(page_title="유튜브 댓글 AI 분석기", page_icon="🤖", layout="centered")
+st.set_page_config(page_title="커링클 유튜브 댓글 분석", page_icon="🤖", layout="centered")
 
 # 예시로 사용할 두 개의 유튜브 링크
 EXAMPLE_1_URL = "https://youtu.be/d95J8yzvjbQ?si=LfL5DLwCL8Pk077r"
@@ -243,7 +243,7 @@ def summarize_comments(comments, api_key):
 # ------------------------------------------------------------
 # 6. 화면 구성 시작
 # ------------------------------------------------------------
-st.title("🤖 유튜브 댓글 AI 분석기")
+st.title("커링클 유튜브 댓글 분석")
 st.caption("댓글을 가져와서 표·단어그래프·워드클라우드로 보여주고, AI가 세 줄로 요약해줘요.")
 
 # 입력창의 값을 미리 저장해 둘 공간(session_state)을 준비
