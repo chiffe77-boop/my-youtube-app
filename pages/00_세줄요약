@@ -1,1 +1,93 @@
 
+"""
+유튜브 댓글 AI 분석 앱 - 'AI 세줄요약' 페이지
+--------------------------------
+이 페이지가 하는 일:
+1) 메인 페이지에서 이미 가져와 둔 댓글(st.session_state.comments)을 그대로 보여주고
+2) 'AI 세 줄 요약' 버튼을 누르면 Solar API(solar-open2 모델)가
+   댓글 전체 반응을 한국어 세 줄로 요약해준다.
+
+* 이 페이지 혼자서는 댓글을 가져올 수 없다.
+  먼저 메인 페이지(main.py)에서 유튜브 링크를 넣고 '댓글 가져오기'를 눌러야 한다.
+
+* 스트림릿 클라우드에 배포할 때는
+  '설정(Settings) > Secrets' 메뉴에 아래 키가 등록되어 있어야 합니다.
+
+  SOLAR_API_KEY = "여기에_업스테이지_Solar_API_키"
+"""
+
+import streamlit as st
+
+from utils import summarize_comments
+
+# ------------------------------------------------------------
+# 0. 기본 설정
+# ------------------------------------------------------------
+st.set_page_config(page_title="AI 세줄요약", page_icon="🧠", layout="centered")
+
+st.title("🧠 AI 세줄요약")
+st.caption("메인 페이지에서 가져온 댓글을 AI가 세 줄로 요약해줘요.")
+
+# AI 요약 결과를 세션에 저장해 둘 공간 미리 준비
+# (버튼을 눌러 화면이 다시 그려져도 값이 사라지지 않도록 하기 위함)
+if "ai_summary" not in st.session_state:
+    st.session_state.ai_summary = None     # AI 요약 결과
+if "ai_error" not in st.session_state:
+    st.session_state.ai_error = None       # AI 요약 실패 메시지
+
+# ------------------------------------------------------------
+# 1. 메인 페이지에서 가져온 댓글이 있는지 확인
+# ------------------------------------------------------------
+comments_sorted = st.session_state.get("comments", None)
+
+if not comments_sorted:
+    st.warning(
+        "📭 아직 가져온 댓글이 없어요. "
+        "먼저 메인 페이지에서 유튜브 링크를 넣고 '댓글 가져오기'를 눌러 주세요."
+    )
+else:
+    # (1) 가져온 댓글 개수를 지표 카드로 표시
+    st.metric("가져온 댓글 개수", f"{len(comments_sorted)}개")
+
+    # (2) 참고용으로 댓글 목록도 접어서(expander) 보여주기
+    with st.expander("가져온 댓글 목록 보기"):
+        st.dataframe(
+            comments_sorted,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "댓글": st.column_config.TextColumn("댓글", width="large"),
+                "좋아요": st.column_config.NumberColumn("👍 좋아요", width="small"),
+            },
+        )
+
+    # (3) AI 세 줄 요약 버튼
+    ai_clicked = st.button("🧠 AI 세 줄 요약", type="primary")
+
+    if ai_clicked:
+        # st.secrets["..."] 대신 .get()으로 안전하게 읽음
+        # -> 키가 없어도 페이지가 죽지 않고 친절한 안내만 뜨도록 함
+        solar_api_key = st.secrets.get("SOLAR_API_KEY", None)
+
+        if not solar_api_key:
+            st.session_state.ai_summary = None
+            st.session_state.ai_error = (
+                "🔑 Solar API 키가 설정되어 있지 않아요. "
+                "스트림릿 클라우드의 'Settings > Secrets'에 "
+                "SOLAR_API_KEY 값을 추가해 주세요."
+            )
+        else:
+            with st.spinner("AI가 댓글을 읽고 요약하는 중이에요..."):
+                summary, ai_error_message = summarize_comments(
+                    comments_sorted, solar_api_key
+                )
+
+            st.session_state.ai_summary = summary
+            st.session_state.ai_error = ai_error_message
+
+    # (4) AI 요약 결과 또는 에러 메시지 표시
+    if st.session_state.ai_error:
+        st.warning(st.session_state.ai_error)
+    elif st.session_state.ai_summary:
+        st.subheader("📝 요약 결과")
+        st.info(st.session_state.ai_summary)
