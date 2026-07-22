@@ -1,12 +1,12 @@
-
 """
-유튜브 댓글 분석 앱 - 1단계
+유튜브 댓글 분석 앱 - 2단계
 --------------------------------
 이 앱이 하는 일:
 1) 사용자가 유튜브 영상 링크를 입력하면
 2) 링크에서 '영상 ID'만 뽑아내고
 3) YouTube Data API v3로 댓글(최대 100개, 좋아요 많은 순)을 가져와서
-4) 표와 지표 카드로 보여준다.
+4) 표와 지표 카드로 보여주고
+5) 댓글에서 자주 나온 단어 TOP 20을 plotly 가로 막대그래프로 보여준다.
 
 * 스트림릿 클라우드에 배포할 때는
   '설정(Settings) > Secrets' 메뉴에 아래처럼 API 키를 등록해야 합니다.
@@ -15,8 +15,10 @@
 """
 
 import re
+from collections import Counter
 from urllib.parse import urlparse, parse_qs
 
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 
@@ -129,6 +131,28 @@ def fetch_comments(video_id: str, api_key: str):
 
 
 # ------------------------------------------------------------
+# 2-1. 댓글 전체에서 자주 나온 단어 상위 N개를 세는 함수 (2단계)
+#    - 한글/영문/숫자만 '단어'로 인정 (특수문자, 이모지 등은 무시)
+#    - 한 글자짜리 단어는 결과에서 제외
+#    - 영어는 대소문자를 구분하지 않도록 소문자로 통일
+# ------------------------------------------------------------
+def get_top_words(comments, top_n=20):
+    word_counter = Counter()
+
+    for comment in comments:
+        text = comment["댓글"]
+        # 한글, 영문, 숫자로 이루어진 덩어리만 '단어'로 추출
+        words = re.findall(r"[가-힣a-zA-Z0-9]+", text)
+
+        for word in words:
+            word = word.lower()          # 영어 대소문자 통일
+            if len(word) >= 2:           # 한 글자짜리 단어는 제외
+                word_counter[word] += 1
+
+    return word_counter.most_common(top_n)
+
+
+# ------------------------------------------------------------
 # 3. 화면 구성 시작
 # ------------------------------------------------------------
 st.title("💬 유튜브 댓글 분석기 (1단계)")
@@ -218,3 +242,37 @@ if fetch_clicked:
                         "좋아요": st.column_config.NumberColumn("👍 좋아요", width="small"),
                     },
                 )
+
+                # (8) 자주 나온 단어 상위 20개 분석 (2단계)
+                top_words = get_top_words(comments_sorted, top_n=20)
+
+                if top_words:
+                    st.subheader("📊 자주 나온 단어 TOP 20")
+
+                    # most_common()은 [(단어, 개수), ...] 형태로
+                    # '많이 나온 순서'로 이미 정렬되어 있음
+                    words = [w for w, _ in top_words]
+                    counts = [c for _, c in top_words]
+
+                    fig = go.Figure(
+                        go.Bar(
+                            x=counts,
+                            y=words,
+                            orientation="h",   # 가로 막대그래프
+                            text=counts,
+                            textposition="outside",
+                        )
+                    )
+
+                    # y축을 뒤집어서, 가장 많이 나온 단어가 맨 위로 오게 함
+                    fig.update_layout(
+                        yaxis=dict(autorange="reversed"),
+                        xaxis_title="언급 횟수",
+                        yaxis_title="단어",
+                        height=600,
+                        margin=dict(l=10, r=30, t=30, b=10),
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("분석할 수 있는 단어(두 글자 이상)가 없어요.")
